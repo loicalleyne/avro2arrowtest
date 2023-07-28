@@ -54,7 +54,7 @@ func ArrowSchemaFromAvro(avroSchema []byte) (*arrow.Schema, string, error) {
 		node.name = "NameStub"
 	}
 	if m["type"].(string) == "record" {
-		fmt.Println(":::: record type :::::")
+		//fmt.Println(":::: record type :::::")
 		if _, ok := m["fields"]; ok {
 			for _, field := range m["fields"].([]interface{}) {
 				node.fields = append(node.fields, field.(map[string]interface{}))
@@ -265,19 +265,32 @@ func traverseNodes(node schemaNode) arrow.Field {
 			// complex types
 			case map[string]interface{}:
 				var n schemaNode
-				n.name = node.name
+				if name, ok := ft.(map[string]interface{})["name"]; ok {
+					node.name = name.(string)
+				} else {
+					n.name = node.name
+				}
 				n.ofType = ft.(map[string]interface{})["type"]
-				switch ft.(map[string]interface{})["type"].(type) {
+
+				switch ut := ft.(map[string]interface{})["type"].(type) {
 				case string:
-					return arrow.Field{Name: node.name, Type: arrow.StructOf(stringTypeOf(n))}
-				case map[string]interface{}:
-					if _, f := ft.(map[string]interface{})["fields"]; f {
-						for _, field := range ft.(map[string]interface{})["fields"].([]interface{}) {
-							n.fields = append(n.fields, field.(map[string]interface{}))
+					if ut == "record" {
+						if _, f := ft.(map[string]interface{})["fields"]; f {
+							for _, field := range ft.(map[string]interface{})["fields"].([]interface{}) {
+								n.fields = append(n.fields, field.(map[string]interface{}))
+							}
+							f := iterateFields(n.fields)
+							return arrow.Field{Name: node.name, Type: arrow.StructOf(f...)}
 						}
 					}
-					//fmt.Printf(":::::::::node name %+v\n", node)
-					f := iterateFields(n.fields)
+					return arrow.Field{Name: node.name, Type: arrow.StructOf(stringTypeOf(n))}
+				case map[string]interface{}:
+					un := schemaNodeFromMap(ut)
+					if un.name == "" {
+						un.name = node.name
+					}
+					//fmt.Printf(":::::::::node fields %+v\n", node.fields)
+					f := iterateFields(un.fields)
 					return arrow.Field{Name: node.name, Type: arrow.StructOf(f...)}
 				}
 			}
