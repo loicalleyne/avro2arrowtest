@@ -6,50 +6,56 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
-	"github.com/apache/arrow/go/v13/arrow"
-	"github.com/apache/arrow/go/v13/arrow/array"
+	"github.com/apache/arrow/go/v13/parquet"
+	pq "github.com/apache/arrow/go/v13/parquet/pqarrow"
 )
 
 func main() {
-
-	fh, err := os.Open("./1k.variants.avro") // file is stored in fh
+	ts := time.Now()
+	filepath := "./imp.avro"
+	info, err := os.Stat(filepath)
 	if err != nil {
 		bail(err)
 	}
-	ior := bufio.NewReader(fh)
-	arrReader := avro.NewOCFReader(ior) //, avro.WithChunk(-1))
-	// for _, fb := range arrReader.Bld.Fields() {
-	// 	fmt.Printf("Field: %+v\n", fb.Type().String())
-	// }
-	fmt.Println("tlrname", arrReader.TLRName())
-	arrReader.Next()
-
-	//fmt.Printf("%+v\n", arrReader.Record())
-	recs := arrReader.Record()
-	fmt.Printf("Record %+v\n", recs)
-	itr, err := array.NewRecordReader(arrReader.Schema(), []arrow.Record{recs})
+	filesize := info.Size()
+	fh, err := os.Open(filepath) // file is stored in fh
 	if err != nil {
-		log.Fatal(err)
+		bail(err)
 	}
-	defer itr.Release()
+	fmt.Printf("file : %v\nsize: %v MB\n", filepath, float64(filesize)/1024/1024)
+	ior := bufio.NewReader(fh)
+	arrReader := avro.NewOCFReader(ior, avro.WithChunk(-1))
+	//fmt.Println("tlrname", arrReader.TLRName())
+	arrReader.Next()
+	recs := arrReader.Record()
 
-	n := 0
-	for itr.Next() {
-		rec := itr.Record()
-		fmt.Printf("NumRows %+v\n", rec.NumRows())
-		for i, col := range rec.Columns() {
-			fmt.Printf("rec[%d][%q]: %v\n", n, rec.ColumnName(i), col)
-		}
-		n++
-		if n > 5 {
-			break
-		}
+	fmt.Printf("File rows: %v  col: %v\n", recs.NumRows(), recs.NumCols())
+	f, err := os.OpenFile("./test.parquet", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		bail(err)
 	}
+	defer f.Close()
+	pwProperties := parquet.NewWriterProperties(parquet.WithDictionaryDefault(true), parquet.WithVersion(2))
+	awProperties := pq.NewArrowWriterProperties(pq.WithStoreSchema())
+	pr, err := pq.NewFileWriter(arrReader.Schema(), f, pwProperties, awProperties)
+	if err != nil {
+		bail(err)
+	}
+	defer pr.Close()
+	fmt.Printf("parquet version: %v\n", pwProperties.Version())
 
+	err = pr.Write(recs)
+	if err != nil {
+		panic(err)
+	}
+	pr.Close()
+	log.Printf("time to convert: %v\n", time.Since(ts))
 }
 
 func bail(err error) {
+	panic(err)
 	fmt.Fprintf(os.Stderr, "%s\n", err)
 	os.Exit(1)
 }
