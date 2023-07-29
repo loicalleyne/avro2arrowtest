@@ -45,7 +45,7 @@ func ArrowSchemaFromAvro(avroSchema []byte) (*arrow.Schema, string, error) {
 	var node schemaNode
 	var tlrName string
 	json.Unmarshal(avroSchema, &m)
-	node = schemaNodeFromMap(m)
+	//node = schemaNodeFromMap(m)
 	if name, ok := m["name"]; ok {
 		tlrName = name.(string)
 		node.name = name.(string)
@@ -73,13 +73,10 @@ func ArrowSchemaFromAvro(avroSchema []byte) (*arrow.Schema, string, error) {
 
 func iterateFields(f []interface{}) []arrow.Field {
 	var s []arrow.Field
-	for _, field := range f {
+	for i, field := range f {
 		n := schemaNodeFromMap(field.(map[string]interface{}))
+		fmt.Printf("%v %v\n", i, n.name)
 		x := traverseNodes(n)
-		if x.Type == nil {
-			fmt.Printf("NIL TYPE: %+v\n", n)
-			panic(x)
-		}
 		s = append(s, x)
 	}
 	return s
@@ -184,7 +181,7 @@ func stringTypeOf(node schemaNode) arrow.Field {
 				return avroLogicalToArrowField(node)
 			}
 			//  Avro primitive type
-			return arrow.Field{Name: node.name, Type: AvroPrimitiveToArrowType(node.ofType.(string))}
+			return arrow.Field{Name: node.name, Type: AvroPrimitiveToArrowType(node.ofType.(string)), Nullable: true}
 		case "fixed":
 			// Duration type is not supported in github.com/linkedin/goavro
 			// Implementing as Binary for now.
@@ -192,10 +189,10 @@ func stringTypeOf(node schemaNode) arrow.Field {
 			case "decimal":
 				return avroLogicalToArrowField(node)
 			case "duration":
-				return arrow.Field{Name: node.name, Type: arrow.BinaryTypes.Binary}
+				return arrow.Field{Name: node.name, Type: arrow.BinaryTypes.Binary, Nullable: true}
 				//return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.MonthDayNanoInterval}
 			}
-			return arrow.Field{Name: node.name, Type: &arrow.FixedSizeBinaryType{ByteWidth: node.size}}
+			return arrow.Field{Name: node.name, Type: &arrow.FixedSizeBinaryType{ByteWidth: node.size}, Nullable: true}
 		case "enum":
 			symbols := make(map[string]string)
 			for index, symbol := range node.symbols {
@@ -214,7 +211,7 @@ func stringTypeOf(node schemaNode) arrow.Field {
 			}
 			return arrow.Field{Name: node.name, Type: &dt, Nullable: true, Metadata: arrow.MetadataFrom(symbols)}
 		default:
-			return arrow.Field{Name: node.name, Type: AvroPrimitiveToArrowType(node.ofType.(string))}
+			return arrow.Field{Name: node.name, Type: AvroPrimitiveToArrowType(node.ofType.(string)), Nullable: true}
 		}
 	} else {
 		// avro "record" type, node has "fields" array
@@ -226,9 +223,9 @@ func stringTypeOf(node schemaNode) arrow.Field {
 				n.fields = append(n.fields, node.fields...)
 			}
 			f := iterateFields(n.fields)
-			return arrow.Field{Name: node.name, Type: arrow.StructOf(f...)}
+			return arrow.Field{Name: node.name, Type: arrow.StructOf(f...), Nullable: true}
 		} else {
-			return arrow.Field{Name: node.name, Type: arrow.BinaryTypes.Binary}
+			return arrow.Field{Name: node.name, Type: arrow.BinaryTypes.Binary, Nullable: true}
 		}
 	}
 	// catch-all, should never happen
@@ -271,19 +268,18 @@ func traverseNodes(node schemaNode) arrow.Field {
 					n.name = node.name
 				}
 				n.ofType = ft.(map[string]interface{})["type"]
-
 				switch ut := ft.(map[string]interface{})["type"].(type) {
 				case string:
 					if ut == "record" {
-						if _, f := ft.(map[string]interface{})["fields"]; f {
-							for _, field := range ft.(map[string]interface{})["fields"].([]interface{}) {
+						if f, ok := ft.(map[string]interface{})["fields"]; ok {
+							for _, field := range f.([]interface{}) {
 								n.fields = append(n.fields, field.(map[string]interface{}))
 							}
-							f := iterateFields(n.fields)
-							return arrow.Field{Name: node.name, Type: arrow.StructOf(f...)}
+							rf := iterateFields(n.fields)
+							return arrow.Field{Name: node.name, Type: arrow.StructOf(rf...), Nullable: true}
 						}
 					}
-					return arrow.Field{Name: node.name, Type: arrow.StructOf(stringTypeOf(n))}
+					return arrow.Field{Name: node.name, Type: arrow.StructOf(stringTypeOf(n)), Nullable: true}
 				case map[string]interface{}:
 					un := schemaNodeFromMap(ut)
 					if un.name == "" {
@@ -291,20 +287,20 @@ func traverseNodes(node schemaNode) arrow.Field {
 					}
 					//fmt.Printf(":::::::::node fields %+v\n", node.fields)
 					f := iterateFields(un.fields)
-					return arrow.Field{Name: node.name, Type: arrow.StructOf(f...)}
+					return arrow.Field{Name: node.name, Type: arrow.StructOf(f...), Nullable: true}
 				}
 			}
 		}
 		// Supported Avro union type is null + one other type.
 		// TODO: Complex AVRO union to Arrow Dense || Sparse Union.
 		if len(unionTypes) == 1 {
-			return arrow.Field{Name: node.name, Type: AvroPrimitiveToArrowType(unionTypes[0])}
+			return arrow.Field{Name: node.name, Type: AvroPrimitiveToArrowType(unionTypes[0]), Nullable: true}
 		} else {
 			// BYTE_ARRAY is the catchall if union type is anything beyond null + one other type.
-			return arrow.Field{Name: node.name, Type: arrow.BinaryTypes.Binary}
+			return arrow.Field{Name: node.name, Type: arrow.BinaryTypes.Binary, Nullable: true}
 		}
 	}
-	return arrow.Field{Name: node.name, Type: arrow.BinaryTypes.Binary}
+	return arrow.Field{Name: node.name, Type: arrow.BinaryTypes.Binary, Nullable: true}
 }
 
 func avroComplexToArrowField(node schemaNode) arrow.Field {
@@ -326,9 +322,9 @@ func avroComplexToArrowField(node schemaNode) arrow.Field {
 			case "int", "long", "float", "double", "bytes", "boolean", "string":
 				return arrow.Field{Name: node.name, Type: arrow.ListOf(AvroPrimitiveToArrowType(i.(string)))}
 			case "enum", "fixed", "map", "record", "array":
-				return arrow.Field{Name: node.name, Type: arrow.ListOf(avroComplexToArrowField(n).Type), Metadata: avroComplexToArrowField(n).Metadata}
+				return arrow.Field{Name: node.name, Type: arrow.ListOf(avroComplexToArrowField(n).Type), Metadata: avroComplexToArrowField(n).Metadata, Nullable: true}
 			case "decimal", "uuid", "date", "time-millis", "time-micros", "timestamp-millis", "timestamp-micros", "local-timestamp-millis", "local-timestamp-micros":
-				return arrow.Field{Name: node.name, Type: arrow.ListOf(avroLogicalToArrowField(n).Type), Metadata: avroLogicalToArrowField(n).Metadata}
+				return arrow.Field{Name: node.name, Type: arrow.ListOf(avroLogicalToArrowField(n).Type), Metadata: avroLogicalToArrowField(n).Metadata, Nullable: true}
 			default:
 				return arrow.Field{Name: node.name, Type: arrow.ListOf(AvroPrimitiveToArrowType(i.(string)))}
 			}
@@ -337,7 +333,7 @@ func avroComplexToArrowField(node schemaNode) arrow.Field {
 			if vn.name == "" {
 				vn.name = node.name
 			}
-			return arrow.Field{Name: node.name, Type: arrow.ListOf(traverseNodes(vn).Type), Metadata: traverseNodes(vn).Metadata}
+			return arrow.Field{Name: node.name, Type: arrow.ListOf(traverseNodes(vn).Type), Metadata: traverseNodes(vn).Metadata, Nullable: true}
 		}
 	}
 	// Avro "enum" field type = Arrow dictionary type
@@ -361,7 +357,7 @@ func avroComplexToArrowField(node schemaNode) arrow.Field {
 	}
 	// Avro "fixed" field type = Arrow FixedSize Primitive BinaryType
 	if i, ok := node.ofType.(map[string]interface{})["size"]; ok {
-		return arrow.Field{Name: node.name, Type: &arrow.FixedSizeBinaryType{ByteWidth: int(i.(float64))}}
+		return arrow.Field{Name: node.name, Type: &arrow.FixedSizeBinaryType{ByteWidth: int(i.(float64))}, Nullable: true}
 	}
 	// Avro "map" field type
 	if i, ok := node.ofType.(map[string]interface{})["values"]; ok {
@@ -370,21 +366,21 @@ func avroComplexToArrowField(node schemaNode) arrow.Field {
 			var vn schemaNode
 			vn.name = n.name
 			vn.ofType = i
-			return arrow.Field{Name: node.name, Type: arrow.MapOf(arrow.BinaryTypes.String, stringTypeOf(vn).Type), Metadata: stringTypeOf(vn).Metadata}
+			return arrow.Field{Name: node.name, Type: arrow.MapOf(arrow.BinaryTypes.String, stringTypeOf(vn).Type), Metadata: stringTypeOf(vn).Metadata, Nullable: true}
 		}
 		vn := schemaNodeFromMap(i.(map[string]interface{}))
 		if vn.name == "" {
 			vn.name = node.name
 		}
-		return arrow.Field{Name: node.name, Type: arrow.MapOf(arrow.BinaryTypes.String, traverseNodes(vn).Type), Metadata: traverseNodes(vn).Metadata}
+		return arrow.Field{Name: node.name, Type: arrow.MapOf(arrow.BinaryTypes.String, traverseNodes(vn).Type), Metadata: traverseNodes(vn).Metadata, Nullable: true}
 	}
 	// Avro "record" field type
-	if _, f := node.ofType.(map[string]interface{})["fields"]; f {
-		for _, field := range node.ofType.(map[string]interface{})["fields"].([]interface{}) {
+	if f, ok := node.ofType.(map[string]interface{})["fields"]; ok {
+		for _, field := range f.([]interface{}) {
 			n.fields = append(n.fields, field.(map[string]interface{}))
 		}
-		s := iterateFields(n.fields)
-		return arrow.Field{Name: n.name, Type: arrow.StructOf(s...)}
+		rf := iterateFields(n.fields)
+		return arrow.Field{Name: n.name, Type: arrow.StructOf(rf...), Nullable: true}
 	}
 	return arrow.Field{}
 }
@@ -435,36 +431,36 @@ func avroLogicalToArrowField(node schemaNode) arrow.Field {
 	// precision, a JSON integer representing the (maximum) precision of decimals stored in this type (required).
 	case "decimal":
 		if node.precision <= 38 {
-			return arrow.Field{Name: node.name, Type: &arrow.Decimal128Type{Precision: node.precision, Scale: node.scale}}
+			return arrow.Field{Name: node.name, Type: &arrow.Decimal128Type{Precision: node.precision, Scale: node.scale}, Nullable: true}
 		} else {
-			return arrow.Field{Name: node.name, Type: &arrow.Decimal256Type{Precision: node.precision, Scale: node.scale}}
+			return arrow.Field{Name: node.name, Type: &arrow.Decimal256Type{Precision: node.precision, Scale: node.scale}, Nullable: true}
 		}
 
 	// The uuid logical type represents a random generated universally unique identifier (UUID).
 	// A uuid logical type annotates an Avro string. The string has to conform with RFC-4122
 	case "uuid":
-		return arrow.Field{Name: node.name, Type: arrow.BinaryTypes.String}
+		return arrow.Field{Name: node.name, Type: arrow.BinaryTypes.String, Nullable: true}
 
 	// The date logical type represents a date within the calendar, with no reference to a particular
 	// time zone or time of day.
 	// A date logical type annotates an Avro int, where the int stores the number of days from the unix epoch,
 	// 1 January 1970 (ISO calendar).
 	case "date":
-		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Date32}
+		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Date32, Nullable: true}
 
 	// The time-millis logical type represents a time of day, with no reference to a particular calendar,
 	// time zone or date, with a precision of one millisecond.
 	// A time-millis logical type annotates an Avro int, where the int stores the number of milliseconds
 	// after midnight, 00:00:00.000.
 	case "time-millis":
-		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Time32ms}
+		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Time32ms, Nullable: true}
 
 	// The time-micros logical type represents a time of day, with no reference to a particular calendar,
 	// time zone or date, with a precision of one microsecond.
 	// A time-micros logical type annotates an Avro long, where the long stores the number of microseconds
 	// after midnight, 00:00:00.000000.
 	case "time-micros":
-		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Time64us}
+		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Time64us, Nullable: true}
 
 	// The timestamp-millis logical type represents an instant on the global timeline, independent of a
 	// particular time zone or calendar, with a precision of one millisecond. Please note that time zone
@@ -474,7 +470,7 @@ func avroLogicalToArrowField(node schemaNode) arrow.Field {
 	// A timestamp-millis logical type annotates an Avro long, where the long stores the number of milliseconds
 	// from the unix epoch, 1 January 1970 00:00:00.000 UTC.
 	case "timestamp-millis":
-		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Timestamp_ms}
+		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Timestamp_ms, Nullable: true}
 	// The timestamp-micros logical type represents an instant on the global timeline, independent of a
 	// particular time zone or calendar, with a precision of one microsecond. Please note that time zone
 	// information gets lost in this process. Upon reading a value back, we can only reconstruct the instant,
@@ -483,22 +479,22 @@ func avroLogicalToArrowField(node schemaNode) arrow.Field {
 	// A timestamp-micros logical type annotates an Avro long, where the long stores the number of microseconds
 	// from the unix epoch, 1 January 1970 00:00:00.000000 UTC.
 	case "timestamp-micros":
-		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Timestamp_us}
+		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Timestamp_us, Nullable: true}
 	// The local-timestamp-millis logical type represents a timestamp in a local timezone, regardless of
 	// what specific time zone is considered local, with a precision of one millisecond.
 	// A local-timestamp-millis logical type annotates an Avro long, where the long stores the number of
 	// milliseconds, from 1 January 1970 00:00:00.000.
 	case "local-timestamp-millis":
-		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Timestamp_ms}
+		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Timestamp_ms, Nullable: true}
 	// The local-timestamp-micros logical type represents a timestamp in a local timezone, regardless of
 	// what specific time zone is considered local, with a precision of one microsecond.
 	// A local-timestamp-micros logical type annotates an Avro long, where the long stores the number of
 	// microseconds, from 1 January 1970 00:00:00.000000.
 	case "local-timestamp-micros":
-		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Timestamp_us}
+		return arrow.Field{Name: node.name, Type: arrow.FixedWidthTypes.Timestamp_us, Nullable: true}
 	//  Avro primitive type
 	default:
-		return arrow.Field{Name: node.name, Type: AvroPrimitiveToArrowType(node.ofType.(string))}
+		return arrow.Field{Name: node.name, Type: AvroPrimitiveToArrowType(node.ofType.(string)), Nullable: true}
 	}
 	return arrow.Field{}
 }
